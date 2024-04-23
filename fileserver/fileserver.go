@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,8 @@ import (
 )
 
 const sniffLen = 512
+
+var simpleRangeRegexp = regexp.MustCompile(`^bytes=(\d+)-(\d*)$`)
 
 func rawHeaderGet(h http.Header, key string) string {
 	if v := h[key]; len(v) > 0 {
@@ -145,6 +148,26 @@ func serveContent(ci inject.CopyInject, w http.ResponseWriter, r *http.Request, 
 	if size >= 0 {
 		if w.Header().Get("Content-Encoding") == "" {
 			w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		}
+	}
+
+	rangeopt := r.Header.Get("Range")
+	if rangeopt != "" && !injector.Found() && r.Method == "GET" {
+		m := simpleRangeRegexp.FindStringSubmatch(rangeopt)
+		if m != nil {
+			start, err1 := strconv.ParseInt(m[1], 10, 64)
+			end, err2 := strconv.ParseInt(m[2], 10, 64)
+			if err2 != nil {
+				end = size - 1
+			}
+
+			if err1 == nil && start <= end && end < size {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+				w.WriteHeader(206)
+				content.Seek(start, io.SeekStart)
+				_, err = io.CopyN(w, content, end-start+1)
+				return err
+			}
 		}
 	}
 
